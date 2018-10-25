@@ -1,0 +1,8 @@
+checkpoints/*
+GFRNet/*
+trash
+
+__pycache__/
+*.py[cod]
+*$py.class
+
