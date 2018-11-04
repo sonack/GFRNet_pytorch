@@ -14,11 +14,19 @@ from collections import namedtuple
 import pdb
 import torch.nn as nn
 
+from netVggs.netVgg_conv3 import netVgg_conv3
+from netVggs.netVgg_conv4 import netVgg_conv4
+
+from opts import opt
 
 class MaskedMSELoss(nn.Module):
-    def __init__(self):
+    def __init__(self, reduction=None):
         super(MaskedMSELoss, self).__init__()
-        self.criterion = nn.MSELoss()
+        if reduction:
+            self.criterion = nn.MSELoss(reduction=reduction)
+        else:
+            self.criterion = nn.MSELoss()
+
 
     def forward(self, input, target, mask):
         # pdb.set_trace()
@@ -86,3 +94,34 @@ class MultiSymLoss(nn.Module):
         for i, sym_loss in enumerate(self.sym_losses):
             loss += sym_loss(grid, sym_axis)
         return loss
+
+class VggFaceLoss(nn.Module):
+    def __init__(self, device, ver = 3):
+        super(VggFaceLoss, self).__init__()
+        self.netVgg = netVgg_conv3 if ver == 3 else netVgg_conv4
+        self.netVgg.load_state_dict(torch.load('./netVggs/netVgg_conv%d.pth' % ver))
+        self.criterion = nn.MSELoss()
+        self.RGB_mean = torch.tensor([129.1863,104.7624,93.5940], device=device).view(1, 3, 1, 1)
+        # pdb.set_trace()
+        for param in self.netVgg.parameters():
+            param.requires_grad = False
+    
+    def forward(self, restored, gt):
+        if opt.minusone_to_one:  # [-1, 1]
+            zero_to_one_restored = restored * 0.5 + 0.5
+            zero_to_one_gt = gt * 0.5 + 0.5
+        else:
+            zero_to_one_restored = restored
+            zero_to_one_gt = gt
+        restored_vgg = zero_to_one_restored * 255 - self.RGB_mean
+        gt_vgg = zero_to_one_gt * 255  - self.RGB_mean
+        # pdb.set_trace()
+        gt_feat = self.netVgg(gt_vgg)
+        res_feat = self.netVgg(restored_vgg)
+        loss = self.criterion(res_feat, gt_feat)
+        return loss
+    
+
+
+
+
