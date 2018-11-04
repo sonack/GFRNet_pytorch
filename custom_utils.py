@@ -64,6 +64,9 @@ def denormalize(num):
 def valid(num):
     return max(min(num, 255), 0)
 
+def norm_to_01(img):
+    return img * 0.5 + 0.5
+
 def save_result_imgs(img_path, triplet):
     guide, gt, warp_guide = triplet
     batch_size = guide.size()[0]

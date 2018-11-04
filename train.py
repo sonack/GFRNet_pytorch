@@ -25,7 +25,7 @@ from criterions import MaskedMSELoss, TVLoss, MultiSymLoss, VggFaceLoss
 from tensorboardX import SummaryWriter
 import time
 
-from custom_utils import create_orig_xy_map, save_result_imgs, crop_face_region_batch, crop_part_region_batch, make_face_region_mask, debug_print, pretty, weight_init
+from custom_utils import create_orig_xy_map, save_result_imgs, crop_face_region_batch, crop_part_region_batch, make_face_region_mask, debug_print, pretty, weight_init, norm_to_01
 
 from opts import opt
 from pprint import pprint
@@ -655,17 +655,17 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
             # writer.add_image('groundtruth', gt[:opt.disp_img_cnt], i_batch_tot)
             # writer.add_image('warp guide', warp_guide[:opt.disp_img_cnt], i_batch_tot)
             if opt.only_train_warpnet:
-                writer.add_image('guide-gt-warp', torch.cat([guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt]], 2), i_batch_tot)
+                writer.add_image('guide-gt-warp', norm_to_01(torch.cat([guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt]], 2)), i_batch_tot)
                 
                 writer.add_scalar('loss/point_loss', point_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/tv_loss', tv_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/sym_loss', sym_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/tot_loss', total_loss.item(), i_batch_tot)
             else:
-                writer.add_image('global/guide-warp-gt-blur-restored', torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2), i_batch_tot)
-                writer.add_image('local/warp-gt-blur-restored', torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2), i_batch_tot)
+                writer.add_image('global/guide-warp-gt-blur-restored', norm_to_01(torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2)), i_batch_tot)
+                writer.add_image('local/warp-gt-blur-restored', norm_to_01(torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2)), i_batch_tot)
                 for idx, part in enumerate(['L', 'R', 'N', 'M']):
-                    writer.add_image('part/%s/warp-gt-blur-restored' % part, torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2), i_batch_tot)
+                    writer.add_image('part/%s/warp-gt-blur-restored' % part, norm_to_01(torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2)), i_batch_tot)
 
                 writer.add_scalar('loss/G/point_loss', point_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/G/tv_loss', tv_loss.item(), i_batch_tot)
