@@ -3,6 +3,8 @@ import os
 from os import path
 import pdb
 from termcolor import colored
+import getpass
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--batch_size', type=int, default=16, help='input batch size')
@@ -89,14 +91,29 @@ parser.add_argument('--log_imgs_num', type=int, default=5, help='random pick X i
 
 parser.add_argument('--save_best_model', action='store_true', help='whether to save the best current model evaluted by epoch_avg_rec_mse_loss')
 parser.add_argument('--new_start_lr', action='store_true', help='directly use lr rather than scheduler decayed lr')
+parser.add_argument('--hpc_version', action='store_true', help='use on HPC servers')
 
 
 
 opt = parser.parse_args()
 
+user_name = getpass.getuser()
+if user_name == 'zhangwenqiang':
+    opt.hpc_version = True
+elif user_name == 'snk':
+    opt.hpc_version = False
+else:
+    pass
+
+if opt.hpc_version:
+    opt.img_dir = '/home/zhangwenqiang/jobs/GFRNet_pytorch/datasets/filtered'
+    opt.sym_dir = '/home/zhangwenqiang/jobs/GFRNet_pytorch/datasets/filtered/sym'
+    opt.landmark_dir = '/home/zhangwenqiang/jobs/GFRNet_pytorch/datasets/filtered/landmark'
+
 opt.disp_img_cnt = min(opt.disp_img_cnt, opt.batch_size)
 opt.checkpoint_dir = path.join(opt.checkpoint_dir, opt.exp_name)
 opt.save_imgs_dir = path.join(opt.save_imgs_dir, opt.exp_name)
+
 if opt.log_imgs_out:
     opt.log_imgs_dir = path.join(opt.log_imgs_dir, opt.exp_name)
 
