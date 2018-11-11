@@ -20,10 +20,10 @@ import models
 
 from opts import opt
 from os import path
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 import torch.nn.functional as F
 from termcolor import colored
-
+from PIL import Image, ImageFont, ImageDraw
 
 def pretty(d, indent=0):
    for key, value in d.items():
@@ -65,7 +65,10 @@ def valid(num):
     return max(min(num, 255), 0)
 
 def norm_to_01(img):
-    return img * 0.5 + 0.5
+    if opt.minusone_to_one:
+        return img * 0.5 + 0.5
+    else:
+        return img
 
 def save_result_imgs(img_path, triplet):
     guide, gt, warp_guide = triplet
@@ -164,6 +167,37 @@ def weight_init(m):
     elif classname.find('BatchNorm') != -1:
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
+
+def pil_image_add_text(img, text):
+    # w, h
+    size = [img.size[0], img.size[1]]
+    # size[1] = int(size[1] * 1.05)
+    size[1] = size[1] + 64
+    # print ('size is', img.size)
+    # print ('new size is', size)
+    layer = Image.new('RGB', size, color='white')
+    layer.paste(img, (0,size[1] - img.size[1]))
+    fonts_path = 'fonts'
+    font = ImageFont.truetype('arial.ttf', 30)
+    ImageDraw.Draw(
+        layer
+    ).text(
+        (0, 0),
+        text,
+        (0,0,128),
+        font = font
+    )
+    return layer
+
+# 'latest iter_tot=%d    [%d/%d] [%d/%d]' % (i_batch_tot, i_batch, batch_num_per_epoch, epoch, opt.num_epochs)
+# 'path.join(opt.log_imgs_dir, [global]_guide-warp-gt-blur-restored_[latest]_pil.png)'
+def log_out_images(t, text, fp):
+    img_tensor = norm_to_01(t)
+    img_pil = transforms.ToPILImage()(make_grid(img_tensor.detach()).cpu())
+    img_pil = pil_image_add_text(img_pil, text)
+    img_pil.save(fp)
+
+
 
 
 

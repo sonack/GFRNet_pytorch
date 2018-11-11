@@ -12,7 +12,6 @@ parser.add_argument('--cuda', action='store_true', help='enable cuda')
 parser.add_argument('--subset', type=str, default='train', help='to use dataset subset')
 parser.add_argument('--img_dir', type=str, default='/home/snk/FaceCorrespondence/GFRNet_train/datasets/filtered', help='img_dir + subset is the real img dir path')
 parser.add_argument('--sym_dir', type=str, default='/home/snk/FaceCorrespondence/GFRNet_train/datasets/filtered/sym', help='the dir storing symmetric axis info files')
-parser.add_argument('--part_dir', type=str, default='', help='the dir storing parts pos info')
 parser.add_argument('--landmark_dir', type=str, default='/home/snk/FaceCorrespondence/GFRNet_train/datasets/filtered/landmark', help='the dir storing landmarks info files')
 parser.add_argument('--num_workers', type=int, default=8, help="the data loader num workers")
 parser.add_argument('--img_size', type=int, default=256, help='the image size (current default square)')
@@ -23,7 +22,8 @@ parser.add_argument('--tv_loss_weight', type=float, default=1, help='the tv loss
 parser.add_argument('--sym_loss_weight', type=float,default=1, help='the sym loss weight')
 parser.add_argument('--globalD_loss_weight', type=float, default=1, help='the global D for G loss weight')
 parser.add_argument('--localD_loss_weight', type=float, default=0.5, help='the local D for G loss weight')
-parser.add_argument('--partD_loss_weight', type=float, default=2, help='the part D (L, R, N, M) for G loss weight')
+# 2 --> 1
+parser.add_argument('--partD_loss_weight', type=float, default=1, help='the part D (L, R, N, M) for G loss weight')
 
 parser.add_argument('--rec_mse_loss_weight', type=float, default=100, help='the rec mse loss weight')
 parser.add_argument('--rec_perp_loss_weight', type=float, default=0.001, help='the rec perceptual loss weight')
@@ -41,7 +41,7 @@ parser.add_argument('--num_epochs', type=int, default=150, help='the total num o
 parser.add_argument('--print_freq', type=int, default=10, help='print loss info every X iters')
 parser.add_argument('--disp_freq', type=int, default=10, help='refresh the tensorboardX info every X iters')
 parser.add_argument('--disp_img_cnt', type=int, default=4, help='the num of displayed images')
-parser.add_argument('--save_epoch_freq', type=int, default=10, help='save model every X epochs')
+parser.add_argument('--save_epoch_freq', type=int, default=50, help='save model every X epochs')
 parser.add_argument('--checkpoint_dir', type=str, default="checkpoints", help='the dir to save model checkpoints')
 parser.add_argument('--save_imgs_dir', type=str, default="save_imgs", help='the dir to save warped image')
 
@@ -82,6 +82,14 @@ parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. de
 
 parser.add_argument('--minusone_to_one', action='store_true', help='to normalize the imgs to [-1, 1] or [0, 1] tensors')
 parser.add_argument('--use_lsgan', action='store_true', help='whether to use lsgan')
+parser.add_argument('--log_imgs_out', action='store_true', help='save training resulting imgs to a separate dir rather than tensorboardX to save disk space')
+parser.add_argument('--log_imgs_dir', type=str, default='logs/', help='the root dir to log training resulting imgs out')
+parser.add_argument('--log_imgs_epoch_freq', type=int, default=1, help='to log training resulting imgs out every X epochs')
+parser.add_argument('--log_imgs_num', type=int, default=5, help='random pick X imgs to log out every log_imgs_epoch_freq epochs')
+
+parser.add_argument('--save_best_model', action='store_true', help='whether to save the best current model evaluted by epoch_avg_rec_mse_loss')
+parser.add_argument('--new_start_lr', action='store_true', help='directly use lr rather than scheduler decayed lr')
+
 
 
 opt = parser.parse_args()
@@ -89,6 +97,9 @@ opt = parser.parse_args()
 opt.disp_img_cnt = min(opt.disp_img_cnt, opt.batch_size)
 opt.checkpoint_dir = path.join(opt.checkpoint_dir, opt.exp_name)
 opt.save_imgs_dir = path.join(opt.save_imgs_dir, opt.exp_name)
+if opt.log_imgs_out:
+    opt.log_imgs_dir = path.join(opt.log_imgs_dir, opt.exp_name)
+
 opt.use_gan_loss = not opt.not_use_gan_loss
 opt.use_custom_init = True
 
@@ -104,6 +115,7 @@ if opt.use_part_gan:
 
 if opt.save_imgs:
     opt.just_look = True
+    opt.flip_prob = -1
 
 print ('import opts!')
 
@@ -117,6 +129,14 @@ if not opt.just_look:
 if opt.save_imgs:
     make_dir(opt.save_imgs_dir)
 
+if opt.log_imgs_out:
+    make_dir(opt.log_imgs_dir)
+    make_dir(path.join(opt.log_imgs_dir, 'epochs'))
+    make_dir(path.join(opt.log_imgs_dir, 'epochs/global'))
+    make_dir(path.join(opt.log_imgs_dir, 'epochs/local'))
+    for part in ['L', 'R', 'N', 'M']:
+        make_dir(path.join(opt.log_imgs_dir, 'epochs/parts/%s' % part))
+
 
 if opt.debug_info:
     if opt.only_train_warpnet:
@@ -128,7 +148,7 @@ if opt.debug_info:
 
 def show_switches_states():
     switches = ['cuda', 'just_look', 'save_imgs', 'debug_info', 'only_train_warpnet', 'not_use_gan_loss', 'use_gan_loss',\
-     'zero_grad_warpnet', 'use_4x', 'use_8x', 'use_part_gan', 'use_custom_init', 'minusone_to_one', 'use_lsgan']
+     'zero_grad_warpnet', 'use_4x', 'use_8x', 'use_part_gan', 'use_custom_init', 'minusone_to_one', 'use_lsgan', 'log_imgs_out']
     dict_opt = vars(opt)
     for switch in switches:
         if dict_opt[switch]:

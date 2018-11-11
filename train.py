@@ -25,7 +25,7 @@ from criterions import MaskedMSELoss, TVLoss, MultiSymLoss, VggFaceLoss
 from tensorboardX import SummaryWriter
 import time
 
-from custom_utils import create_orig_xy_map, save_result_imgs, crop_face_region_batch, crop_part_region_batch, make_face_region_mask, debug_print, pretty, weight_init, norm_to_01
+from custom_utils import create_orig_xy_map, save_result_imgs, crop_face_region_batch, crop_part_region_batch, make_face_region_mask, debug_print, pretty, weight_init, norm_to_01, pil_image_add_text, log_out_images
 
 from opts import opt
 from pprint import pprint
@@ -33,7 +33,7 @@ import json
 from torch.optim import lr_scheduler
 from termcolor import colored
 import json
-
+from torchvision.utils import save_image, make_grid
 configs = json.dumps(vars(opt), indent=2)
 print (colored(configs, 'green'))
 # print (colored(vars(opt), 'green'))
@@ -180,7 +180,6 @@ if opt.load_checkpoint:
         # load models & optimizers
         GFRNet_G.load_state_dict(ckpt['G_state_dict'])
         optimizerG.load_state_dict(ckpt['optimizerG_state_dict'])
-
         if opt.use_gan_loss:
             # snk
             GFRNet_globalD.load_state_dict(ckpt['globalD_state_dict'])
@@ -217,6 +216,26 @@ else:
         # pdb.set_trace()
 
 
+
+def set_initial_lr(optim):
+    for p_g in optim.param_groups:
+        p_g['initial_lr'] = opt.lr
+
+if opt.new_start_lr:
+    optimizerG.param_groups[0]['initial_lr'] = opt.lr * 0.001
+    optimizerG.param_groups[1]['initial_lr'] = opt.lr
+    set_initial_lr(optimizerGlobalD)
+    if opt.use_gan_loss:
+        if opt.use_part_gan:
+            for idx in range(4):
+                set_initial_lr(partD_optims[idx])
+        else:
+            set_initial_lr(optimizerLocalD)
+
+    # pdb.set_trace()
+
+
+        
 # criterions
 
 point_crit = MaskedMSELoss()
@@ -246,7 +265,7 @@ if not opt.only_train_warpnet:
     rec_face_mse_crit_show = nn.MSELoss(reduction='sum')
     # rec_weighted_mse_crit = MaskedMSELoss(reduction='sum')
     rec_mse_crit = MaskedMSELoss(reduction='sum')
-    rec_face_mse_crit = nn.MSELoss(reduction='sum')
+    # rec_face_mse_crit = nn.MSELoss(reduction='sum')
     rec_perp_crit = VggFaceLoss(device, 3)
     rec_perp_crit.to(device)
     # rec_perp_crit = nn.MSELoss() # vggface
@@ -256,14 +275,14 @@ if not opt.only_train_warpnet:
 
 if not opt.only_train_warpnet:
     print ('last epoch:', last_epoch)
-    schedulerG = lr_scheduler.StepLR(optimizerG, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=last_epoch)
-    schedulerGlobalD = lr_scheduler.StepLR(optimizerGlobalD, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=last_epoch)
+    schedulerG = lr_scheduler.StepLR(optimizerG, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=-1 if opt.new_start_lr else last_epoch)
+    schedulerGlobalD = lr_scheduler.StepLR(optimizerGlobalD, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=-1 if opt.new_start_lr else last_epoch)
     all_schedulers = [schedulerG, schedulerGlobalD]
     if opt.use_part_gan:
         for partD_optim in partD_optims:
-            all_schedulers.append(lr_scheduler.StepLR(partD_optim, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=last_epoch))
+            all_schedulers.append(lr_scheduler.StepLR(partD_optim, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=-1 if opt.new_start_lr else last_epoch))
     else:
-        schedulerLocalD = lr_scheduler.StepLR(optimizerLocalD, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=last_epoch)
+        schedulerLocalD = lr_scheduler.StepLR(optimizerLocalD, step_size=opt.lr_decay_epochs, gamma=opt.lr_decay_rate, last_epoch=-1 if opt.new_start_lr else last_epoch)
         all_schedulers.append(schedulerLocalD)
 
 # schedulers = [schedulerWarpNet, schedulerRecNet, schedulerGlobalD, schedulerLocalD]
@@ -282,17 +301,34 @@ fake_label_val = 0
 i_batch_tot = 0
 
 # set mode
-if opt.only_train_warpnet:
-    GFRNet_warpnet.train()
-else:
-    GFRNet_G.train()
-    if opt.use_gan_loss:
-        GFRNet_globalD.train()
-        if opt.use_part_gan:
-            for GFRNet_partD in GFRNet_partDs:
-                GFRNet_partD.train()
-        else:
-            GFRNet_localD.train()
+
+def set_train_mode():
+    if opt.only_train_warpnet:
+        GFRNet_warpnet.train()
+    else:
+        GFRNet_G.train()
+        if opt.use_gan_loss:
+            GFRNet_globalD.train()
+            if opt.use_part_gan:
+                for GFRNet_partD in GFRNet_partDs:
+                    GFRNet_partD.train()
+            else:
+                GFRNet_localD.train()
+
+
+# for dropout and bn
+def set_eval_mode():
+    if opt.only_train_warpnet:
+        GFRNet_warpnet.eval()
+    else:
+        GFRNet_G.eval()
+        if opt.use_gan_loss:
+            GFRNet_globalD.eval()
+            if opt.use_part_gan:
+                for GFRNet_partD in GFRNet_partDs:
+                    GFRNet_partD.eval()
+            else:
+                GFRNet_localD.eval()
 
 def print_inter_grad(msg):
     def func(x):
@@ -302,8 +338,14 @@ def print_inter_grad(msg):
     return func
 
 
+best_avg_rec_mse_loss = 1e100
+
 for epoch in range(last_epoch + 1, opt.num_epochs):
 
+
+    set_eval_mode() if opt.save_imgs else set_train_mode()
+
+    avg_tot_loss = 0
     avg_tv_loss = 0
     avg_point_loss = 0
     avg_sym_loss = 0
@@ -315,6 +357,9 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
     avg_rec_face_mse_loss = 0
     avg_rec_perp_loss = 0
 
+ 
+    best_to_save_flag = False
+    
     batch_num_per_epoch = len(face_dataset_dataloader)
     
     for scheduler in all_schedulers:
@@ -323,9 +368,10 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
     # param_groups[0]['lr'] is 0.001 x cur_lr
     cur_lr = optimizerG.param_groups[1]['lr']
     # pdb.set_trace()
-    writer.add_scalar('lr', cur_lr, epoch)
+    if not opt.save_imgs:
+        writer.add_scalar('lr', cur_lr, epoch)
     # print ('cur_lr', cur_lr)
-
+    # pdb.set_trace()
     for i_batch, sample_batched in enumerate(face_dataset_dataloader):
         # just for debug
         # print ('i_batch:', i_batch)
@@ -643,9 +689,9 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
 
         if opt.save_imgs:            
             if opt.only_train_warpnet:
-                save_result_imgs(sample_batched['img_path'], [guide, gt, warp_guide])
+                save_result_imgs(sample_batched['img_path'], map(norm_to_01, [guide, gt, warp_guide]))
             else:
-                save_result_imgs(sample_batched['img_path'], [blur, gt, restored_img])
+                save_result_imgs(sample_batched['img_path'], map(norm_to_01, [blur, gt, restored_img]))
             continue
             
         
@@ -655,6 +701,8 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
             # writer.add_image('groundtruth', gt[:opt.disp_img_cnt], i_batch_tot)
             # writer.add_image('warp guide', warp_guide[:opt.disp_img_cnt], i_batch_tot)
             if opt.only_train_warpnet:
+                
+                
                 writer.add_image('guide-gt-warp', norm_to_01(torch.cat([guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt]], 2)), i_batch_tot)
                 
                 writer.add_scalar('loss/point_loss', point_loss.item(), i_batch_tot)
@@ -662,10 +710,34 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 writer.add_scalar('loss/sym_loss', sym_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/tot_loss', total_loss.item(), i_batch_tot)
             else:
-                writer.add_image('global/guide-warp-gt-blur-restored', norm_to_01(torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2)), i_batch_tot)
-                writer.add_image('local/warp-gt-blur-restored', norm_to_01(torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2)), i_batch_tot)
-                for idx, part in enumerate(['L', 'R', 'N', 'M']):
-                    writer.add_image('part/%s/warp-gt-blur-restored' % part, norm_to_01(torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2)), i_batch_tot)
+
+                if opt.log_imgs_out:
+                    # global
+                    log_out_images(
+                        torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2),
+                        'latest iter_tot=%d    [%d/%d] [%d/%d]' % (i_batch_tot, i_batch, batch_num_per_epoch, epoch, opt.num_epochs),
+                        path.join(opt.log_imgs_dir, '[global]_guide-warp-gt-blur-restored_[latest].png')
+                    )
+                    # local
+                    log_out_images(
+                        torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2),
+                        'latest iter_tot=%d' % i_batch_tot,
+                        path.join(opt.log_imgs_dir, '[local]_warp-gt-blur-restored_[latest].png')
+                    )
+                    # parts
+                    for idx, part in enumerate(['L', 'R', 'N', 'M']):
+                        log_out_images(
+                            torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2),
+                            'latest iter_tot=%d' % i_batch_tot,
+                            path.join(opt.log_imgs_dir, '[part_%s]_warp-gt-blur-restored_[latest].png' % part)
+                        )
+
+                else:
+                    writer.add_image('global/guide-warp-gt-blur-restored', norm_to_01(torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2)), i_batch_tot)
+                    writer.add_image('local/warp-gt-blur-restored', norm_to_01(torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2)), i_batch_tot)
+                
+                    for idx, part in enumerate(['L', 'R', 'N', 'M']):
+                        writer.add_image('part/%s/warp-gt-blur-restored' % part, norm_to_01(torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2)), i_batch_tot)
 
                 writer.add_scalar('loss/G/point_loss', point_loss.item(), i_batch_tot)
                 writer.add_scalar('loss/G/tv_loss', tv_loss.item(), i_batch_tot)
@@ -708,12 +780,12 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 if opt.use_gan_loss:
                     if opt.use_part_gan:
                         # part gan losses info see tensorboardX
-                        gan_loss_info = "\tGlobal GAN Loss [G/D]=[%f/%f]\t" % (
+                        gan_loss_info = "\tGlobal GAN Loss [G/D]=[%f/%f]" % (
                             opt.globalD_loss_weight * globalD_loss_for_G.item(),\
                             globalD_loss_for_D.item(),
                         )
                     else:
-                        gan_loss_info = "\tGlobal GAN Loss [G/D]=[%f/%f]\tLocal GAN Loss [G/D]=[%f/%f]\t" % (
+                        gan_loss_info = "\tGlobal GAN Loss [G/D]=[%f/%f]\tLocal GAN Loss [G/D]=[%f/%f]" % (
                             opt.globalD_loss_weight * globalD_loss_for_G.item(),\
                             globalD_loss_for_D.item(),\
                             opt.localD_loss_weight * localD_loss_for_G.item(),\
@@ -738,6 +810,7 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 print ('-' * opt.sep_width)
                     
         
+        avg_tot_loss += (total_loss_G.item()) / batch_num_per_epoch
         avg_tv_loss += (opt.tv_loss_weight * tv_loss.item()) / batch_num_per_epoch
         avg_point_loss += (opt.point_loss_weight * point_loss.item()) / batch_num_per_epoch
         avg_sym_loss += (opt.sym_loss_weight * sym_loss.item()) / batch_num_per_epoch
@@ -748,14 +821,27 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 if not opt.use_part_gan:
                     avg_localD_loss_for_G += (opt.localD_loss_weight * localD_loss_for_G.item()) / batch_num_per_epoch
                     avg_localD_loss_for_D += (localD_loss_for_D.item()) / batch_num_per_epoch
+                
             avg_rec_mse_loss += (opt.rec_mse_loss_weight * rec_mse_loss.item()) / batch_num_per_epoch
             avg_rec_perp_loss += (opt.rec_perp_loss_weight * rec_perp_loss.item()) / batch_num_per_epoch
             avg_rec_face_mse_loss += (opt.rec_mse_loss_weight * face_mse_loss_show.item()) / batch_num_per_epoch
 
         i_batch_tot += 1
     
-    if not opt.only_train_warpnet:
+
+   
+
+                
+
+
+            
+    if not (opt.only_train_warpnet or opt.save_imgs) :
         writer.add_scalar('loss/G/epoch_avg/rec_mse_loss', avg_rec_mse_loss, epoch)
+        if opt.save_best_model:
+            if avg_rec_mse_loss < best_avg_rec_mse_loss:
+                # print ('previous best: %f, now better: %f' % (best_avg_rec_mse_loss, avg_rec_mse_loss))
+                best_avg_rec_mse_loss = avg_rec_mse_loss
+                best_to_save_flag = True
 
     if opt.save_imgs:
         print ('save imgs over!')
@@ -769,11 +855,74 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), epoch, opt.num_epochs, avg_point_loss + avg_tv_loss + avg_sym_loss, avg_point_loss, avg_tv_loss, avg_sym_loss))
     else:
         print ('Time: %s Epoch [%s/%d] Tot Loss = %f\tPoint Loss = %f\tTV Loss=%f\tSym Loss=%f\tGlobal GAN Loss [G/D]=[%f/%f]\tLocal GAN Loss [G/D]=[%f/%f]\tRec Mse Loss=%s\tRec Perp Loss=%f\tRec Face Mse Loss=%f' % 
-                        (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), colored(epoch, 'green'), opt.num_epochs, avg_point_loss + avg_tv_loss + avg_sym_loss + avg_globalD_loss_for_G + avg_localD_loss_for_G + avg_rec_mse_loss,\
+                        (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), colored(epoch, 'green'), opt.num_epochs, avg_tot_loss,\
                         avg_point_loss, avg_tv_loss, avg_sym_loss, avg_globalD_loss_for_G, avg_globalD_loss_for_D, avg_localD_loss_for_G, avg_localD_loss_for_D, colored(avg_rec_mse_loss, 'yellow'), avg_rec_perp_loss, avg_rec_face_mse_loss))
     print ('=' * opt.sep_width)
     print ()
     
+
+    # one epoch over
+    # just for only_train_warpnet = False
+    if not opt.only_train_warpnet and opt.log_imgs_out:
+        if epoch % opt.log_imgs_epoch_freq == 0:
+            if epoch == last_epoch + 1:
+                selected_logged_imgs_ids = random.sample(list(range(len(face_dataset))), opt.log_imgs_num)
+                # print ('selected logged imgs ids is', selected_logged_imgs_ids)
+                writer.add_text('Selected logged imgs ids', str(selected_logged_imgs_ids), 0)
+                
+                packed_batch = [face_dataset[idx] for idx in selected_logged_imgs_ids]
+                packed_batch_loader = DataLoader(packed_batch, batch_size = opt.log_imgs_num, shuffle = False, num_workers = 0)
+                # for idx, only_batch in enumerate(packed_batch_loader):
+                #     print (idx)
+                #     pdb.set_trace()
+
+                # pdb.set_trace()
+
+            set_eval_mode()
+            for i_batch, sample_batched in enumerate(packed_batch_loader):
+                blur = sample_batched['img_l'].to(device)
+                guide = sample_batched['img_r'].to(device)
+                gt = sample_batched['gt'].to(device)
+                face_region = sample_batched['face_region_calc']
+                part_pos = sample_batched['part_pos']
+                face_region_blur = crop_face_region_batch(blur, face_region)
+                part_region_blur = crop_part_region_batch(blur, part_pos)
+                with torch.no_grad():
+                    warp_guide, grid, restored_img = GFRNet_G(blur, guide)
+
+                local_guide = crop_face_region_batch(warp_guide, face_region)
+                localD_input_real_single = crop_face_region_batch(gt, face_region)
+                localD_input_fake_single = crop_face_region_batch(restored_img, face_region)
+                
+                partD_inputs_left = crop_part_region_batch(warp_guide, part_pos)
+                partD_inputs_real_right = crop_part_region_batch(gt, part_pos)
+                partD_inputs_fake_right = crop_part_region_batch(restored_img, part_pos)  # L, R, N, M
+
+                # global
+                log_out_images(
+                    torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2),
+                    'epoch: [%d/%d]' % (epoch, opt.num_epochs),
+                    path.join(path.join(opt.log_imgs_dir, 'epochs/global'), '[global]_guide-warp-gt-blur-restored_[epoch=%d].png' % epoch)
+                )
+                # local
+                log_out_images(
+                    torch.cat([local_guide[:opt.disp_img_cnt], localD_input_real_single[:opt.disp_img_cnt], face_region_blur[:opt.disp_img_cnt], localD_input_fake_single[:opt.disp_img_cnt]], 2),
+                    'epoch: [%d/%d]' % (epoch, opt.num_epochs),
+                    path.join(path.join(opt.log_imgs_dir, 'epochs/local'), '[local]_warp-gt-blur-restored_[epoch=%d].png' % epoch)
+                )
+                # parts
+                for idx, part in enumerate(['L', 'R', 'N', 'M']):
+                    log_out_images(
+                        torch.cat([ partD_inputs_left[idx][:opt.disp_img_cnt], partD_inputs_real_right[idx][:opt.disp_img_cnt], part_region_blur[idx][:opt.disp_img_cnt], partD_inputs_fake_right[idx][:opt.disp_img_cnt] ], 2),
+                        'epoch: [%d/%d]' % (epoch, opt.num_epochs),
+                        path.join(path.join(opt.log_imgs_dir, 'epochs/parts/%s/' % part), '[part_%s]_warp-gt-blur-restored_[epoch=%d].png' % (part, epoch))
+                    )
+                
+                # img_tensor = norm_to_01(torch.cat([guide[:opt.disp_img_cnt], warp_guide[:opt.disp_img_cnt], gt[:opt.disp_img_cnt], blur[:opt.disp_img_cnt], restored_img[:opt.disp_img_cnt]], 2))
+                # img_pil = transforms.ToPILImage()(make_grid(img_tensor.detach()).cpu())
+                # img_pil.save(path.join(path.join(opt.log_imgs_dir, 'epochs'), '[global]_guide-warp-gt-blur-restored_[epoch=%d]_pil.png' % epoch))
+                # pdb.set_trace()
+
     # save model
 
     if opt.only_train_warpnet:
@@ -790,9 +939,14 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                 'sym_loss': avg_sym_loss,
                 }, checkpoint_file)
     else:
-        if (not opt.just_look) and ((epoch + 1) % opt.save_epoch_freq == 0):
-            
-            checkpoint_file = path.join(opt.checkpoint_dir, 'checkpoint_%02d.pt' % (epoch+1))
+        if (not opt.just_look) and ((epoch + 1) % opt.save_epoch_freq == 0 or best_to_save_flag):      
+            if best_to_save_flag and ((epoch + 1) % opt.save_epoch_freq):
+                checkpoint_file = path.join(opt.checkpoint_dir, 'best_checkpoint.pt')
+                writer.add_text('Best save epochs', str(epoch+1), epoch+1)
+
+            else:
+                checkpoint_file = path.join(opt.checkpoint_dir, 'checkpoint_%02d.pt' % (epoch+1))
+    
             # print ('epoch is', epoch, 'opt.save_epoch_freq is', opt.save_epoch_freq)
             print ('save model to %s ...' % checkpoint_file)
             save_dict = {
@@ -825,7 +979,8 @@ for epoch in range(last_epoch + 1, opt.num_epochs):
                     save_dict['optimizerLocalD_state_dict'] = optimizerLocalD.state_dict()
                     save_dict['localD_loss_for_D'] = avg_localD_loss_for_D
                     save_dict['localD_loss_for_G'] = avg_localD_loss_for_G
-
+            if opt.save_best_model:
+                save_dict['best_avg_rec_mse_loss'] = best_avg_rec_mse_loss
             torch.save(save_dict, checkpoint_file)
         
 if not opt.save_imgs:

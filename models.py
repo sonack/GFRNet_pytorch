@@ -169,7 +169,8 @@ class GFRNet_recNet(nn.Module):
             nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(opt.ngf * 2, opt.output_nc_img, kernel_size=4, stride=2, padding=1)
         ))
-        self.out_act = nn.Sigmoid()
+
+        self.out_act = nn.Tanh() if opt.minusone_to_one else nn.Sigmoid()
     
     def forward(self, blur, warp_guide):
         pair = torch.cat([blur, warp_guide], 1)

@@ -121,6 +121,8 @@ class FaceDataset(Dataset):
             list(range(28,32)),
             list(range(49, 69)) # [49, ... 68]
         ]
+        if flip_flag:
+            parts_points_ids[0], parts_points_ids[1] = parts_points_ids[1], parts_points_ids[0] 
 
         parts_points_lens = [len(ids) for ids in parts_points_ids]
         mid_xs = [0] * 4
@@ -242,6 +244,10 @@ class FaceDataset(Dataset):
         if DEBUG_INFO:
             print ('flip_flag:', flip_flag)
 
+        if flip_flag:
+            print ('flip flag is True!')
+            pdb.set_trace()
+        
         full_filename = path.join(self.img_dir, self.img_list[idx])
 
         file_id, face_region = self.parse_face_region(self.img_list[idx], flip_flag)
